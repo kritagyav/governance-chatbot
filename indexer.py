@@ -23,6 +23,9 @@ class _FastEmbedFunction:
     def __call__(self, input: list[str]) -> list[list[float]]:
         return [e.tolist() for e in self._model.embed(input)]
 
+    def embed_query(self, input: list[str]) -> list[list[float]]:
+        return self(input)
+
 import pypdf
 from docx import Document as DocxDocument
 from pptx import Presentation
