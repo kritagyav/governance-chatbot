@@ -15,6 +15,10 @@ class _FastEmbedFunction:
     """Lightweight ONNX-based embedding function — no PyTorch required."""
     def __init__(self, model_name: str = "BAAI/bge-small-en-v1.5"):
         self._model = TextEmbedding(model_name)
+        self._name = model_name
+
+    def name(self) -> str:
+        return self._name
 
     def __call__(self, input: list[str]) -> list[list[float]]:
         return [e.tolist() for e in self._model.embed(input)]
