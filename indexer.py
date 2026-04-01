@@ -9,7 +9,15 @@ import json
 from pathlib import Path
 from typing import Optional
 import chromadb
-from chromadb.utils.embedding_functions import FastEmbedEmbeddingFunction
+from fastembed import TextEmbedding
+
+class _FastEmbedFunction:
+    """Lightweight ONNX-based embedding function — no PyTorch required."""
+    def __init__(self, model_name: str = "BAAI/bge-small-en-v1.5"):
+        self._model = TextEmbedding(model_name)
+
+    def __call__(self, input: list[str]) -> list[list[float]]:
+        return [e.tolist() for e in self._model.embed(input)]
 
 import pypdf
 from docx import Document as DocxDocument
@@ -27,7 +35,7 @@ class GovernanceIndexer:
     def __init__(self, folder_path: str, db_path: str = "./chroma_db"):
         self.folder_path = str(folder_path)
 
-        ef = FastEmbedEmbeddingFunction(model_name="BAAI/bge-small-en-v1.5")
+        ef = _FastEmbedFunction()
         self.client = chromadb.PersistentClient(path=db_path)
         self.collection = self.client.get_or_create_collection(
             name="governance_docs",
