@@ -384,7 +384,13 @@ with st.sidebar:
 
     uploaded_files = st.file_uploader(
         "Drop files here",
-        type=["pdf", "docx", "pptx", "xlsx", "xls"],
+        type=[
+            "pdf", "docx", "pptx", "xlsx", "xls",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.ms-excel",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        ],
         accept_multiple_files=True,
         label_visibility="collapsed",
     )
