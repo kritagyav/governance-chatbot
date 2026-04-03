@@ -36,7 +36,7 @@ from docx import Document as DocxDocument
 from pptx import Presentation
 import pandas as pd
 
-SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".xlsx", ".xls"}
+SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".xlsx", ".xls", ".xlsm"}
 
 # Each chunk is ~400 words with 80-word overlap to preserve context across boundaries
 CHUNK_WORDS = 400
@@ -103,7 +103,7 @@ class GovernanceIndexer:
         return "\n\n".join(parts)
 
     def _load_xlsx(self, path: str) -> str:
-        engine = "xlrd" if path.endswith(".xls") else "openpyxl"
+        engine = "xlrd" if path.endswith(".xls") else "openpyxl"  # xlsm also uses openpyxl
         xl = pd.ExcelFile(path, engine=engine)
         parts = []
         for sheet in xl.sheet_names:
@@ -120,7 +120,7 @@ class GovernanceIndexer:
                 return self._load_docx(path)
             elif ext in (".pptx", ".ppt"):
                 return self._load_pptx(path)
-            elif ext in (".xlsx", ".xls"):
+            elif ext in (".xlsx", ".xls", ".xlsm"):
                 return self._load_xlsx(path)
         except Exception as e:
             print(f"[Indexer] Error loading {Path(path).name}: {e}")

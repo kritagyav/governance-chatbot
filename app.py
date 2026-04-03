@@ -26,6 +26,7 @@ SUPPORTED_TYPES = {
     "docx": "📝",
     "xlsx": "📊",
     "xls":  "📊",
+    "xlsm": "📊",
     "pptx": "📑",
     "ppt":  "📑",
 }
@@ -320,7 +321,7 @@ with tab_upload:
 
     uploaded_files = st.file_uploader(
         "Drag and drop files here, or click to browse",
-        type=["pdf", "docx", "pptx", "xlsx", "xls"],
+        type=["pdf", "docx", "pptx", "xlsx", "xls", "xlsm"],
         accept_multiple_files=True,
         label_visibility="collapsed",
     )
