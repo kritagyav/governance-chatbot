@@ -211,7 +211,7 @@ def _start_watcher(indexer: GovernanceIndexer):
         print(f"[Watcher] {e}")
 
 
-@st.cache_resource
+@st.cache_resource(show_spinner="Starting Governance Assistant — please wait…")
 def get_indexer() -> GovernanceIndexer:
     os.makedirs(UPLOADS_DIR, exist_ok=True)
     indexer = GovernanceIndexer(UPLOADS_DIR, db_path=DB_DIR)
@@ -393,84 +393,77 @@ with tab_upload:
 with tab_chat:
     indexed_files = indexer.get_indexed_files()
 
+    # Banner if no docs uploaded yet
     if not indexed_files:
-        st.markdown("""
-        <div class="welcome-card">
-            <div style="font-size:2.5rem;margin-bottom:0.6rem">📂</div>
-            <h3>Upload documents first</h3>
-            <p style="font-size:0.85rem;margin-top:0.3rem">
-                Go to the <strong>Documents</strong> tab to upload your governance files.
-            </p>
-        </div>
-        """, unsafe_allow_html=True)
-    else:
-        # Scrollable message area
-        chat_area = st.container(height=480)
-        with chat_area:
-            if not st.session_state.messages:
-                st.markdown("""
-                <div class="welcome-card">
-                    <div style="font-size:2rem;margin-bottom:0.5rem">💬</div>
-                    <h3>Ready to answer your questions</h3>
-                    <p style="font-size:0.85rem;margin-top:0.3rem">Type below or try a suggestion:</p>
-                </div>
-                """, unsafe_allow_html=True)
-            else:
-                for msg in st.session_state.messages:
-                    with st.chat_message(msg["role"]):
-                        st.markdown(msg["content"])
-                        if msg["role"] == "assistant" and msg.get("sources"):
-                            render_sources(msg["sources"])
+        st.info("No documents indexed yet. Go to the **Documents** tab to upload your governance files first.", icon="📂")
 
-        # Suggestion buttons (only when no messages yet)
+    # Scrollable message area — always shown
+    chat_area = st.container(height=460)
+    with chat_area:
         if not st.session_state.messages:
-            cols = st.columns(2)
-            suggestions = [
-                "What are the approval limits in the DOA?",
-                "What is the procurement process for high-value contracts?",
-                "Who has authority to approve variation orders?",
-                "What are the vendor registration requirements?",
-            ]
-            for i, s in enumerate(suggestions):
-                if cols[i % 2].button(s, use_container_width=True, key=f"sug_{i}"):
-                    st.session_state.messages.append({"role": "user", "content": s, "sources": []})
-                    st.rerun()
+            st.markdown("""
+            <div class="welcome-card">
+                <div style="font-size:2rem;margin-bottom:0.5rem">💬</div>
+                <h3>Ask anything about your governance documents</h3>
+                <p style="font-size:0.85rem;margin-top:0.3rem">Type your question below and press Send.</p>
+            </div>
+            """, unsafe_allow_html=True)
         else:
-            if st.button("🗨️ Clear Chat", key="clear_chat"):
-                st.session_state.messages = []
+            for msg in st.session_state.messages:
+                with st.chat_message(msg["role"]):
+                    st.markdown(msg["content"])
+                    if msg["role"] == "assistant" and msg.get("sources"):
+                        render_sources(msg["sources"])
+
+    # Suggestion buttons when no chat yet and docs are ready
+    if not st.session_state.messages and indexed_files:
+        cols = st.columns(2)
+        suggestions = [
+            "What are the approval limits in the DOA?",
+            "What is the procurement process for high-value contracts?",
+            "Who has authority to approve variation orders?",
+            "What are the vendor registration requirements?",
+        ]
+        for i, s in enumerate(suggestions):
+            if cols[i % 2].button(s, use_container_width=True, key=f"sug_{i}"):
+                st.session_state.messages.append({"role": "user", "content": s, "sources": []})
                 st.rerun()
 
-        # Input row — always visible at bottom of tab
-        col_input, col_send = st.columns([6, 1])
-        with col_input:
-            prompt = st.text_input(
-                "Ask a question",
-                placeholder="Ask about governance, DOA, policies, procedures…",
-                label_visibility="collapsed",
-                key="chat_input",
-            )
-        with col_send:
-            send = st.button("Send", use_container_width=True, type="primary")
-
-        if send and prompt:
-            st.session_state.messages.append({"role": "user", "content": prompt, "sources": []})
-            sources, stream = get_sources_and_stream(
-                indexer, prompt, st.session_state.messages[:-1]
-            )
-            response = ""
-            with chat_area:
-                with st.chat_message("user"):
-                    st.markdown(prompt)
-                with st.chat_message("assistant"):
-                    response = st.write_stream(stream)
-                    render_sources(sources)
-
-            st.session_state.messages.append({
-                "role": "assistant",
-                "content": response,
-                "sources": sources,
-            })
+    if st.session_state.messages:
+        if st.button("🗨️ Clear Chat", key="clear_chat"):
+            st.session_state.messages = []
             st.rerun()
+
+    # Input — always visible
+    col_input, col_send = st.columns([6, 1])
+    with col_input:
+        prompt = st.text_input(
+            "Ask a question",
+            placeholder="Ask about governance, DOA, policies, procedures…",
+            label_visibility="collapsed",
+            key="chat_input",
+        )
+    with col_send:
+        send = st.button("Send", use_container_width=True, type="primary")
+
+    if send and prompt:
+        st.session_state.messages.append({"role": "user", "content": prompt, "sources": []})
+        sources, stream = get_sources_and_stream(
+            indexer, prompt, st.session_state.messages[:-1]
+        )
+        with chat_area:
+            with st.chat_message("user"):
+                st.markdown(prompt)
+            with st.chat_message("assistant"):
+                response = st.write_stream(stream)
+                render_sources(sources)
+
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": response,
+            "sources": sources,
+        })
+        st.rerun()
 
 
 # ================================================================== #
