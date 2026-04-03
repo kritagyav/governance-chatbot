@@ -9,19 +9,24 @@ import json
 from pathlib import Path
 from typing import Optional
 import chromadb
-from fastembed import TextEmbedding
 
 class _FastEmbedFunction:
-    """Lightweight ONNX-based embedding function — no PyTorch required."""
+    """Lazy-loaded ONNX embedding function — model loads only on first use."""
     def __init__(self, model_name: str = "BAAI/bge-small-en-v1.5"):
-        self._model = TextEmbedding(model_name)
-        self._name = model_name
+        self._model_name = model_name
+        self._model = None  # not loaded until first use
+
+    def _model_(self):
+        if self._model is None:
+            from fastembed import TextEmbedding
+            self._model = TextEmbedding(self._model_name)
+        return self._model
 
     def name(self) -> str:
-        return self._name
+        return self._model_name
 
     def __call__(self, input: list[str]) -> list[list[float]]:
-        return [e.tolist() for e in self._model.embed(input)]
+        return [e.tolist() for e in self._model_().embed(input)]
 
     def embed_query(self, input: list[str]) -> list[list[float]]:
         return self(input)
