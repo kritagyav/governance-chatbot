@@ -256,9 +256,10 @@ class GovernanceIndexer:
         if not self._chunks or self._vectorizer is None:
             return []
 
+        n = min(n_results, len(self._chunks))
         query_vec = self._vectorizer.transform([query])
         scores = cosine_similarity(query_vec, self._matrix)[0]
-        top_indices = np.argsort(scores)[::-1][:n_results]
+        top_indices = np.argsort(scores)[::-1][:n]
 
         return [
             {
@@ -268,7 +269,7 @@ class GovernanceIndexer:
                 "score": float(scores[i]),
             }
             for i in top_indices
-            if scores[i] > 0
+            if i < len(self._chunks) and scores[i] > 0
         ]
 
     # ------------------------------------------------------------------ #
