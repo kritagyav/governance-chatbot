@@ -1,81 +1,82 @@
 """
 Document indexer for governance chatbot.
-Handles PDF, DOCX, PPTX, XLSX — tracks file changes to avoid redundant re-indexing.
+Uses TF-IDF search (no neural model) — lightweight, runs on 512MB RAM.
+Handles PDF, DOCX, PPTX, XLSX, XLSM.
 """
 
 import os
 import hashlib
 import json
+import pickle
 from pathlib import Path
 from typing import Optional
-import chromadb
 
-class _FastEmbedFunction:
-    """Lazy-loaded ONNX embedding function — model loads only on first use."""
-    def __init__(self, model_name: str = "BAAI/bge-small-en-v1.5"):
-        self._model_name = model_name
-        self._model = None  # not loaded until first use
-
-    def _model_(self):
-        if self._model is None:
-            from fastembed import TextEmbedding
-            self._model = TextEmbedding(self._model_name)
-        return self._model
-
-    def name(self) -> str:
-        return self._model_name
-
-    def __call__(self, input: list[str]) -> list[list[float]]:
-        return [e.tolist() for e in self._model_().embed(input)]
-
-    def embed_query(self, input: list[str]) -> list[list[float]]:
-        return self(input)
+import numpy as np
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
 import pypdf
 from docx import Document as DocxDocument
 from pptx import Presentation
 import pandas as pd
 
-SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".xlsx", ".xls", ".xlsm"}
-
-# Each chunk is ~400 words with 80-word overlap to preserve context across boundaries
+SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".ppt", ".xlsx", ".xls", ".xlsm"}
 CHUNK_WORDS = 400
 CHUNK_OVERLAP_WORDS = 80
 
 
 class GovernanceIndexer:
-    def __init__(self, folder_path: str, db_path: str = "./chroma_db"):
+    def __init__(self, folder_path: str, db_path: str = "./search_db"):
         self.folder_path = str(folder_path)
+        os.makedirs(db_path, exist_ok=True)
 
-        ef = _FastEmbedFunction()
-        self.client = chromadb.PersistentClient(path=db_path)
-        self.collection = self.client.get_or_create_collection(
-            name="governance_docs",
-            embedding_function=ef,
-            metadata={"hnsw:space": "cosine"},
-        )
+        self._chunks_path  = os.path.join(db_path, "chunks.json")
+        self._hashes_path  = os.path.join(db_path, "hashes.json")
+        self._tfidf_path   = os.path.join(db_path, "tfidf.pkl")
 
-        self._hash_store_path = os.path.join(db_path, "file_hashes.json")
-        self._file_hashes = self._load_hashes()
+        # chunks: list of {"text": str, "source": str, "path": str}
+        self._chunks  = self._load_json(self._chunks_path, [])
+        self._hashes  = self._load_json(self._hashes_path, {})
+        self._vectorizer: Optional[TfidfVectorizer] = None
+        self._matrix   = None
+        self._load_tfidf()
 
     # ------------------------------------------------------------------ #
-    # Hash tracking (skip unchanged files on restart)
+    # Persistence helpers
     # ------------------------------------------------------------------ #
 
-    def _load_hashes(self) -> dict:
-        if os.path.exists(self._hash_store_path):
-            with open(self._hash_store_path) as f:
+    def _load_json(self, path, default):
+        if os.path.exists(path):
+            with open(path) as f:
                 return json.load(f)
-        return {}
+        return default
 
-    def _save_hashes(self):
-        os.makedirs(os.path.dirname(self._hash_store_path), exist_ok=True)
-        with open(self._hash_store_path, "w") as f:
-            json.dump(self._file_hashes, f)
+    def _save_json(self, path, obj):
+        with open(path, "w") as f:
+            json.dump(obj, f)
 
-    def _file_hash(self, path: str) -> str:
-        with open(path, "rb") as f:
-            return hashlib.md5(f.read()).hexdigest()
+    def _load_tfidf(self):
+        if os.path.exists(self._tfidf_path) and self._chunks:
+            try:
+                with open(self._tfidf_path, "rb") as f:
+                    self._vectorizer, self._matrix = pickle.load(f)
+            except Exception:
+                self._rebuild_tfidf()
+
+    def _rebuild_tfidf(self):
+        if not self._chunks:
+            self._vectorizer = None
+            self._matrix = None
+            return
+        texts = [c["text"] for c in self._chunks]
+        self._vectorizer = TfidfVectorizer(
+            max_features=20000,
+            ngram_range=(1, 2),
+            sublinear_tf=True,
+        )
+        self._matrix = self._vectorizer.fit_transform(texts)
+        with open(self._tfidf_path, "wb") as f:
+            pickle.dump((self._vectorizer, self._matrix), f)
 
     # ------------------------------------------------------------------ #
     # Document loaders
@@ -103,7 +104,8 @@ class GovernanceIndexer:
         return "\n\n".join(parts)
 
     def _load_xlsx(self, path: str) -> str:
-        engine = "xlrd" if path.endswith(".xls") else "openpyxl"  # xlsm also uses openpyxl
+        ext = Path(path).suffix.lower()
+        engine = "xlrd" if ext == ".xls" else "openpyxl"
         xl = pd.ExcelFile(path, engine=engine)
         parts = []
         for sheet in xl.sheet_names:
@@ -135,7 +137,7 @@ class GovernanceIndexer:
         step = CHUNK_WORDS - CHUNK_OVERLAP_WORDS
         chunks = []
         for i in range(0, len(words), step):
-            chunk = " ".join(words[i : i + CHUNK_WORDS])
+            chunk = " ".join(words[i: i + CHUNK_WORDS])
             if len(chunk.strip()) > 50:
                 chunks.append(chunk)
         return chunks
@@ -144,24 +146,25 @@ class GovernanceIndexer:
     # Index operations
     # ------------------------------------------------------------------ #
 
+    def _file_hash(self, path: str) -> str:
+        with open(path, "rb") as f:
+            return hashlib.md5(f.read()).hexdigest()
+
     def _remove_file_chunks(self, path: str):
-        try:
-            results = self.collection.get(where={"path": path})
-            if results and results["ids"]:
-                self.collection.delete(ids=results["ids"])
-        except Exception as e:
-            print(f"[Indexer] Error removing chunks for {Path(path).name}: {e}")
+        before = len(self._chunks)
+        self._chunks = [c for c in self._chunks if c["path"] != path]
+        if len(self._chunks) != before:
+            self._save_json(self._chunks_path, self._chunks)
 
     def index_file(self, path: str) -> bool:
-        """Index a single file. Returns True if newly indexed/updated."""
         if Path(path).suffix.lower() not in SUPPORTED_EXTENSIONS:
             return False
         if not os.path.exists(path):
             return False
 
         current_hash = self._file_hash(path)
-        if self._file_hashes.get(path) == current_hash:
-            return False  # file unchanged
+        if self._hashes.get(path) == current_hash:
+            return False  # unchanged
 
         self._remove_file_chunks(path)
 
@@ -175,53 +178,49 @@ class GovernanceIndexer:
             return False
 
         filename = Path(path).name
-        ids = [f"{path}::chunk_{i}" for i in range(len(chunks))]
-        metadatas = [
-            {"source": filename, "path": path, "chunk": i}
-            for i in range(len(chunks))
-        ]
+        for chunk in chunks:
+            self._chunks.append({"text": chunk, "source": filename, "path": path})
 
-        self.collection.add(documents=chunks, ids=ids, metadatas=metadatas)
-
-        self._file_hashes[path] = current_hash
-        self._save_hashes()
+        self._hashes[path] = current_hash
+        self._save_json(self._chunks_path, self._chunks)
+        self._save_json(self._hashes_path, self._hashes)
+        self._rebuild_tfidf()
         print(f"[Indexer] Indexed '{filename}' → {len(chunks)} chunks")
         return True
 
     def remove_file(self, path: str):
-        """Remove a deleted file from the index."""
         self._remove_file_chunks(path)
-        self._file_hashes.pop(path, None)
-        self._save_hashes()
-        print(f"[Indexer] Removed '{Path(path).name}' from index")
+        self._hashes.pop(path, None)
+        self._save_json(self._hashes_path, self._hashes)
+        self._rebuild_tfidf()
+        print(f"[Indexer] Removed '{Path(path).name}'")
 
     def index_all(self):
-        """Scan the governance folder recursively and index all new/changed files."""
         folder = Path(self.folder_path)
         if not folder.exists():
-            print(f"[Indexer] Folder not found: {self.folder_path}")
             return
 
-        files = [f for f in folder.rglob("*") if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS]
+        files = [f for f in folder.rglob("*")
+                 if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS]
         print(f"[Indexer] Scanning {len(files)} document(s)…")
 
         updated = sum(self.index_file(str(f)) for f in files)
 
-        # Clean stale hashes for deleted files
+        # Remove stale entries
         current_paths = {str(f) for f in files}
-        stale = [p for p in list(self._file_hashes) if p not in current_paths]
+        stale = [p for p in list(self._hashes) if p not in current_paths]
         for p in stale:
             self._remove_file_chunks(p)
-            del self._file_hashes[p]
+            del self._hashes[p]
         if stale:
-            self._save_hashes()
+            self._save_json(self._hashes_path, self._hashes)
+            self._rebuild_tfidf()
 
         print(f"[Indexer] Done — {updated} new/updated, {len(stale)} removed.")
 
     def force_reindex_all(self):
-        """Clear hash cache and re-index everything from scratch."""
-        self._file_hashes.clear()
-        self._save_hashes()
+        self._hashes.clear()
+        self._save_json(self._hashes_path, self._hashes)
         self.index_all()
 
     # ------------------------------------------------------------------ #
@@ -229,29 +228,30 @@ class GovernanceIndexer:
     # ------------------------------------------------------------------ #
 
     def search(self, query: str, n_results: int = 6) -> list[dict]:
-        """Return top-N relevant chunks for a query."""
-        count = self.collection.count()
-        if count == 0:
+        if not self._chunks or self._vectorizer is None:
             return []
 
-        results = self.collection.query(
-            query_texts=[query],
-            n_results=min(n_results, count),
-        )
+        query_vec = self._vectorizer.transform([query])
+        scores = cosine_similarity(query_vec, self._matrix)[0]
+        top_indices = np.argsort(scores)[::-1][:n_results]
 
         return [
-            {"text": doc, "source": meta["source"], "path": meta["path"]}
-            for doc, meta in zip(
-                results["documents"][0], results["metadatas"][0]
-            )
+            {
+                "text": self._chunks[i]["text"],
+                "source": self._chunks[i]["source"],
+                "path": self._chunks[i]["path"],
+                "score": float(scores[i]),
+            }
+            for i in top_indices
+            if scores[i] > 0
         ]
 
     # ------------------------------------------------------------------ #
-    # Status helpers
+    # Status
     # ------------------------------------------------------------------ #
 
     def get_indexed_files(self) -> list[str]:
-        return sorted(Path(p).name for p in self._file_hashes)
+        return sorted({Path(p).name for p in self._hashes})
 
     def get_chunk_count(self) -> int:
-        return self.collection.count()
+        return len(self._chunks)
