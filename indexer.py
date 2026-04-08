@@ -11,6 +11,7 @@ import pickle
 from pathlib import Path
 from typing import Optional
 
+import gc
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -18,7 +19,6 @@ from sklearn.metrics.pairwise import cosine_similarity
 import pypdf
 from docx import Document as DocxDocument
 from pptx import Presentation
-import pandas as pd
 
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".ppt", ".xlsx", ".xls", ".xlsm"}
 CHUNK_WORDS = 400
@@ -104,30 +104,35 @@ class GovernanceIndexer:
         return "\n\n".join(parts)
 
     def _load_xlsx(self, path: str) -> str:
-        ext = Path(path).suffix.lower()
-
-        if ext == ".xlsm":
-            # Use openpyxl directly with data_only=True to read cell values not formulas
-            import openpyxl
-            wb = openpyxl.load_workbook(path, keep_vba=True, data_only=True)
-            parts = []
-            for sheet_name in wb.sheetnames:
-                ws = wb[sheet_name]
-                rows = []
-                for row in ws.iter_rows(values_only=True):
-                    row_data = [str(c) if c is not None else "" for c in row]
-                    if any(c.strip() for c in row_data):
-                        rows.append("\t".join(row_data))
-                if rows:
-                    parts.append(f"[Sheet: {sheet_name}]\n" + "\n".join(rows))
-            return "\n\n".join(parts)
-
-        engine = "xlrd" if ext == ".xls" else "openpyxl"
-        xl = pd.ExcelFile(path, engine=engine)
+        """Load xlsx/xlsm using openpyxl in read_only+data_only mode (memory efficient)."""
+        import openpyxl
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
         parts = []
-        for sheet in xl.sheet_names:
-            df = xl.parse(sheet)
-            parts.append(f"[Sheet: {sheet}]\n{df.to_string(index=False, max_rows=300)}")
+        for sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+            rows = []
+            for row in ws.iter_rows(values_only=True, max_row=500):
+                row_data = [str(c) if c is not None else "" for c in row]
+                if any(c.strip() for c in row_data):
+                    rows.append("  |  ".join(row_data))
+            if rows:
+                parts.append(f"[Sheet: {sheet_name}]\n" + "\n".join(rows))
+        wb.close()
+        return "\n\n".join(parts)
+
+    def _load_xls(self, path: str) -> str:
+        """Load legacy .xls using xlrd directly (no pandas needed)."""
+        import xlrd
+        wb = xlrd.open_workbook(path)
+        parts = []
+        for sheet in wb.sheets():
+            rows = []
+            for row_idx in range(min(sheet.nrows, 500)):
+                row_data = [str(sheet.cell_value(row_idx, col)) for col in range(sheet.ncols)]
+                if any(c.strip() for c in row_data):
+                    rows.append("  |  ".join(row_data))
+            if rows:
+                parts.append(f"[Sheet: {sheet.name}]\n" + "\n".join(rows))
         return "\n\n".join(parts)
 
     def _load_document(self, path: str) -> Optional[str]:
@@ -139,7 +144,9 @@ class GovernanceIndexer:
                 return self._load_docx(path)
             elif ext in (".pptx", ".ppt"):
                 return self._load_pptx(path)
-            elif ext in (".xlsx", ".xls", ".xlsm"):
+            elif ext == ".xls":
+                return self._load_xls(path)
+            elif ext in (".xlsx", ".xlsm"):
                 return self._load_xlsx(path)
         except Exception as e:
             print(f"[Indexer] Error loading {Path(path).name}: {e}")
@@ -202,6 +209,7 @@ class GovernanceIndexer:
         self._save_json(self._chunks_path, self._chunks)
         self._save_json(self._hashes_path, self._hashes)
         self._rebuild_tfidf()
+        gc.collect()
         print(f"[Indexer] Indexed '{filename}' → {len(chunks)} chunks")
         return True
 
