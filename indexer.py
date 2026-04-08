@@ -105,6 +105,23 @@ class GovernanceIndexer:
 
     def _load_xlsx(self, path: str) -> str:
         ext = Path(path).suffix.lower()
+
+        if ext == ".xlsm":
+            # Use openpyxl directly with data_only=True to read cell values not formulas
+            import openpyxl
+            wb = openpyxl.load_workbook(path, keep_vba=True, data_only=True)
+            parts = []
+            for sheet_name in wb.sheetnames:
+                ws = wb[sheet_name]
+                rows = []
+                for row in ws.iter_rows(values_only=True):
+                    row_data = [str(c) if c is not None else "" for c in row]
+                    if any(c.strip() for c in row_data):
+                        rows.append("\t".join(row_data))
+                if rows:
+                    parts.append(f"[Sheet: {sheet_name}]\n" + "\n".join(rows))
+            return "\n\n".join(parts)
+
         engine = "xlrd" if ext == ".xls" else "openpyxl"
         xl = pd.ExcelFile(path, engine=engine)
         parts = []
